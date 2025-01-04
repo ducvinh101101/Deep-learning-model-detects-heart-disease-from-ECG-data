@@ -2,9 +2,10 @@ import os
 import pandas as pd
 import numpy as np
 from keras.api.models import Model
-from keras.api.layers import Dense, SimpleRNN, MaxPooling1D, Flatten, Dropout, Input, Concatenate
+from keras.api.layers import Dense, Conv1D, MaxPooling1D, Flatten, Dropout, LSTM, Input, Concatenate
+from keras.src.layers import Bidirectional, BatchNormalization
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder, MultiLabelBinarizer
+from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder, MultiLabelBinarizer
 from keras.api.utils import to_categorical
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
@@ -18,7 +19,6 @@ diagnostics_file = "Data_ECG/Diagnostics.csv"
 ecg_data_folder = "Data_ECG/ECGData/ECGData"
 
 # 1. Load Diagnostics.csv
-# Handle potential issues with delimiters and encoding
 diagnostics_data = pd.read_csv(diagnostics_file, encoding='utf-8')
 diagnostics_data = diagnostics_data[~diagnostics_data['Rhythm'].isin(['SAAWR', 'AVRT', 'AVNRT', 'AT', 'SA', 'AF', 'SVT'])].reset_index(drop=True)
 
@@ -33,7 +33,6 @@ diagnostics_data = pd.concat([diagnostics_data_sb, diagnostics_data_non_sb]).res
 metadata_features = diagnostics_data.drop(columns=['FileName', 'Rhythm'])
 label_column = diagnostics_data['Rhythm']
 
-# Encode categorical features (e.g., Gender)
 metadata_encoded = pd.get_dummies(metadata_features, columns=['Gender'], drop_first=True)
 
 # Process Beat column
@@ -47,7 +46,6 @@ beat_columns = mlb.classes_
 
 # Filter numeric columns for scaling
 numeric_columns = metadata_encoded.select_dtypes(include=[np.number])
-print("Các cột số:", numeric_columns.columns)
 
 # Scale numerical features
 scaler = StandardScaler()
@@ -55,7 +53,6 @@ metadata_scaled_numeric = scaler.fit_transform(numeric_columns)
 
 # Combine metadata and beat data
 metadata_scaled = np.hstack([metadata_scaled_numeric, beat_encoded])
-print("Shape of combined metadata:", metadata_scaled.shape)
 
 # Encode labels
 label_encoder = LabelEncoder()
@@ -95,9 +92,9 @@ print("Loading complete!")
 max_length = max(len(signal) for signal in ecgs)
 ecgs_padded = pad_sequences(ecgs, maxlen=max_length, padding='post', dtype='float32')
 print(2)
-X_ecg = ecgs_padded  # Use the padded ECG data
-X_metadata = np.array(metadata_list) # Convert metadata_list to a NumPy array
-y = labels_one_hot  # Use one-hot encoded labels
+X_ecg = ecgs_padded
+X_metadata = np.array(metadata_list)
+y = labels_one_hot
 
 min_samples = min(len(X_ecg), len(X_metadata), len(y))
 X_ecg = X_ecg[:min_samples]
@@ -119,19 +116,30 @@ y_train = np.nan_to_num(y_train, nan=0.0, posinf=1e10, neginf=-1e10)
 
 input_ecg = Input(shape=(X_ecg_train.shape[1], X_ecg_train.shape[2]))
 
-x_ecg = SimpleRNN(32, return_sequences=True, kernel_regularizer=l2(0.001))(input_ecg)
-x_ecg = Dropout(0.3)(x_ecg)
-x_ecg = SimpleRNN(64, return_sequences=True, kernel_regularizer=l2(0.001))(x_ecg)
-x_ecg = Dropout(0.3)(x_ecg)
-x_ecg = SimpleRNN(64, kernel_regularizer=l2(0.001))(x_ecg)
-x_ecg = Dense(64, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_ecg = Conv1D(filters=128, kernel_size=10, activation='relu', kernel_regularizer=l2(0.001))(input_ecg)
+x_ecg = Conv1D(filters=128, kernel_size=10, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
+x_ecg = Dropout(0.2)(x_ecg)
+x_ecg = BatchNormalization()(x_ecg)
+x_ecg = Conv1D(filters=128, kernel_size=10, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_ecg = Conv1D(filters=128, kernel_size=10, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
+x_ecg = Dropout(0.2)(x_ecg)
+x_ecg = BatchNormalization()(x_ecg)
+x_ecg = Conv1D(filters=128, kernel_size=10, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_ecg = Conv1D(filters=128, kernel_size=10, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
+x_ecg = Dropout(0.2)(x_ecg)
+x_ecg = BatchNormalization()(x_ecg)
+x_ecg = Dense(128, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_ecg = Flatten()(x_ecg)
 
 input_metadata = Input(shape=(X_metadata_train.shape[1],))
 x_metadata = Dense(64, activation='relu', kernel_regularizer=l2(0.001))(input_metadata)
 x_metadata = Dense(32, activation='relu', kernel_regularizer=l2(0.001))(x_metadata)
 
 combined = Concatenate()([x_ecg, x_metadata])
-x = Dense(64, activation='relu', kernel_regularizer=l2(0.001))(combined)
+x = Dense(128, activation='relu', kernel_regularizer=l2(0.001))(combined)
 x = Dropout(0.3)(x)
 output = Dense(y_train.shape[1], activation='softmax')(x)
 
