@@ -141,15 +141,14 @@ model = Model(inputs=[input_ecg, input_metadata], outputs=output)
 model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
 
 # Add callbacks
-early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
-lr_reduction = ReduceLROnPlateau(monitor='val_loss', patience=3, factor=0.5, verbose=1)
+# early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
+# lr_reduction = ReduceLROnPlateau(monitor='val_loss', patience=3, factor=0.5, verbose=1)
 
 # Train the model
 history = model.fit(
     [X_ecg_train, X_metadata_train], y_train,
     validation_data=([X_ecg_test, X_metadata_test], y_test),
-    epochs=50, batch_size=64,
-    callbacks=[early_stopping, lr_reduction]
+    epochs=100, batch_size=64
 )
 
 # 6. Evaluate the model

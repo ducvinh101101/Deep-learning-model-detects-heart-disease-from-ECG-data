@@ -2,8 +2,10 @@ import os
 import pandas as pd
 import numpy as np
 import tensorflow as tf
+from keras.api.callbacks import Callback
 from keras.api.models import Model
-from keras.api.layers import Dense, Conv1D, MaxPooling1D, Flatten, Dropout, LSTM, Input, Concatenate, BatchNormalization, Layer , LayerNormalization
+from keras.api.layers import Dense, Conv1D, MaxPooling1D, Flatten, Dropout, Input, Concatenate, BatchNormalization, Layer, LSTM
+from keras.src.layers import Reshape, LayerNormalization
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder, MultiLabelBinarizer
 from keras.api.utils import to_categorical
@@ -11,9 +13,8 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
 from keras.api.preprocessing.sequence import pad_sequences
 from keras.api.callbacks import EarlyStopping, ReduceLROnPlateau
-from keras.api.optimizers import Adam
+from keras.api.optimizers import Adam, RMSprop
 from keras.api.regularizers import l2
-
 
 # Custom MLPBlock converted to a Keras Layer
 class MLPBlock(Layer):
@@ -45,9 +46,75 @@ class MLPBlock(Layer):
         x = self.channel_mixer_fc2(x)
         return x
 
+# Custom Feature-wise Attention Layer
+class FeatureWiseAttention(Layer):
+    def __init__(self, input_dim, **kwargs):
+        super(FeatureWiseAttention, self).__init__(**kwargs)
+        self.attention_layer = Dense(input_dim, activation='softmax')
+
+    def call(self, inputs):
+        attention_weights = self.attention_layer(inputs)
+        return inputs * attention_weights
+
+class FFTLayer(Layer):
+    def __init__(self, **kwargs):
+        super(FFTLayer, self).__init__(**kwargs)
+
+    def call(self, inputs):
+        # Perform FFT and use the magnitude
+        fft = tf.signal.fft(tf.cast(inputs, tf.complex64))
+        magnitude = tf.math.abs(fft)
+        return tf.cast(magnitude, tf.float32)
+
+# Custom Attention Layer
+class Attention(Layer):
+    def __init__(self, **kwargs):
+        super(Attention, self).__init__(**kwargs)
+
+    def build(self, input_shape):
+        self.W = self.add_weight(name='attention_weight', shape=(input_shape[-1], 1), initializer='random_normal', trainable=True)
+        self.b = self.add_weight(name='attention_bias', shape=(input_shape[1], 1), initializer='zeros', trainable=True)
+        super(Attention, self).build(input_shape)
+
+    def call(self, inputs):
+        score = tf.nn.tanh(tf.tensordot(inputs, self.W, axes=1) + self.b)
+        attention_weights = tf.nn.softmax(score, axis=1)
+        context_vector = attention_weights * inputs
+        context_vector = tf.reduce_sum(context_vector, axis=1)
+        return context_vector
+
+
+# Custom Scaled Dot-Product Attention Layer in Keras
+class ScaledDotProductAttention(Layer):
+    def __init__(self, temperature, attn_dropout=0.1, **kwargs):
+        super(ScaledDotProductAttention, self).__init__(**kwargs)
+        self.temperature = temperature
+        self.dropout = Dropout(attn_dropout)
+
+    def call(self, q, k, v, mask=None):
+        attn = tf.matmul(q, k, transpose_b=True) / self.temperature
+
+        if mask is not None:
+            mask = tf.cast(mask, dtype=attn.dtype)
+            attn = tf.where(mask == 0, -1e9, attn)
+
+        attn = tf.nn.softmax(attn, axis=-1)
+        attn = self.dropout(attn)
+        output = tf.matmul(attn, v)
+
+        return output, attn
+
+# Custom Abs Layer
+class AbsLayer(Layer):
+    def __init__(self, **kwargs):
+        super(AbsLayer, self).__init__(**kwargs)
+
+    def call(self, inputs):
+        return tf.math.abs(inputs)
+
 # Custom layer to add dimension
 class ExpandDimsLayer(Layer):
-    def __init__(self, axis=1, **kwargs):
+    def __init__(self, axis=-1, **kwargs):
         super(ExpandDimsLayer, self).__init__(**kwargs)
         self.axis = axis
 
@@ -57,6 +124,7 @@ class ExpandDimsLayer(Layer):
 # Path to data
 diagnostics_file = "Data_ECG/Diagnostics.csv"
 ecg_data_folder = "Data_ECG/ECGData/ECGData"
+
 
 # 1. Load Diagnostics.csv
 diagnostics_data = pd.read_csv(diagnostics_file, encoding='utf-8')
@@ -149,83 +217,144 @@ print(4)
 X_ecg_train = np.nan_to_num(X_ecg_train, nan=0.0, posinf=1e10, neginf=-1e10)
 X_metadata_train = np.nan_to_num(X_metadata_train, nan=0.0, posinf=1e10, neginf=-1e10)
 y_train = np.nan_to_num(y_train, nan=0.0, posinf=1e10, neginf=-1e10)
-
+# Model building
 input_ecg = Input(shape=(X_ecg_train.shape[1], X_ecg_train.shape[2]))
 
 x_ecg = Conv1D(filters=32, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(input_ecg)
+x_fft = FFTLayer()(x_ecg)
+x_ecg = Concatenate()([x_ecg, x_fft])
 x_ecg = Conv1D(filters=32, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_fft = FFTLayer()(x_ecg)
+x_ecg = Concatenate()([x_ecg, x_fft])
 x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
 x_ecg = Dropout(0.2)(x_ecg)
 x_ecg = BatchNormalization()(x_ecg)
 x_ecg = Conv1D(filters=64, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_fft = FFTLayer()(x_ecg)
+x_ecg = Concatenate()([x_ecg, x_fft])
 x_ecg = Conv1D(filters=64, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_fft = FFTLayer()(x_ecg)
+x_ecg = Concatenate()([x_ecg, x_fft])
 x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
 x_ecg = Dropout(0.2)(x_ecg)
 x_ecg = BatchNormalization()(x_ecg)
 x_ecg = Conv1D(filters=128, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_fft = FFTLayer()(x_ecg)
+x_ecg = Concatenate()([x_ecg, x_fft])
 x_ecg = Conv1D(filters=128, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_fft = FFTLayer()(x_ecg)
+x_ecg = Concatenate()([x_ecg, x_fft])
 x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
 x_ecg = Dropout(0.2)(x_ecg)
 x_ecg = BatchNormalization()(x_ecg)
 x_ecg = Conv1D(filters=256, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_fft = FFTLayer()(x_ecg)
+x_ecg = Concatenate()([x_ecg, x_fft])
 x_ecg = Conv1D(filters=256, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_fft = FFTLayer()(x_ecg)
+x_ecg = Concatenate()([x_ecg, x_fft])
 x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
 x_ecg = Dropout(0.2)(x_ecg)
 x_ecg = BatchNormalization()(x_ecg)
-x_ecg = LSTM(512, return_sequences=True, dropout=0.2, recurrent_dropout=0.2)(x_ecg)
-x_ecg = LSTM(512, dropout=0.2, recurrent_dropout=0.2)(x_ecg)
+x_ecg = LSTM(256, return_sequences=True, dropout=0.2, recurrent_dropout=0.2)(x_ecg)
+# Prepare Q, K, V for Attention
+q = Dense(64)(x_ecg)
+k = Dense(64)(x_ecg)
+v = Dense(64)(x_ecg)
+# Apply Scaled Dot-Product Attention
+attention_layer = ScaledDotProductAttention(temperature=64**0.5)
+x_ecg_attention, _ = attention_layer(q, k, v)
+# Continue with pipeline
+x_ecg = LSTM(256, dropout=0.2, recurrent_dropout=0.2)(x_ecg_attention)
 x_ecg = Dense(512, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
 
-# Apply MLPBlock
-x_ecg = ExpandDimsLayer(axis=1)(x_ecg)
-mlp_block = MLPBlock(embedding_dim=512, num_tokens=1, token_mixer_dim=256, channel_mixer_dim=512)
-x_ecg = mlp_block(x_ecg)
-x_ecg = Flatten()(x_ecg)
+# # Apply Feature Wise Attention
+# x_ecg = FeatureWiseAttention(input_dim=x_ecg.shape[-1])(x_ecg)
+# x_ecg = Flatten()(x_ecg)
+
+
+# # Apply MLPBlock
+# x_ecg = ExpandDimsLayer(axis=1)(x_ecg)
+# mlp_block = MLPBlock(embedding_dim=512, num_tokens=1, token_mixer_dim=256, channel_mixer_dim=512)
+# x_ecg = mlp_block(x_ecg)
+# x_ecg = Flatten()(x_ecg)
 
 input_metadata = Input(shape=(X_metadata_train.shape[1],))
-x_metadata = Dense(64, activation='relu', kernel_regularizer=l2(0.001))(input_metadata)
-x_metadata = Dense(32, activation='relu', kernel_regularizer=l2(0.001))(x_metadata)
+x_metadata = Reshape((X_metadata_train.shape[1], 1))(input_metadata)
+x_metadata = Conv1D(filters=32, kernel_size=3, activation='relu', kernel_regularizer=l2(0.001))(x_metadata)
+x_metadata = MaxPooling1D(pool_size=2)(x_metadata)
+x_metadata = Dropout(0.2)(x_metadata)
+x_metadata = BatchNormalization()(x_metadata)
+x_metadata = Conv1D(filters=64, kernel_size=3, activation='relu', kernel_regularizer=l2(0.001))(x_metadata)
+x_metadata = MaxPooling1D(pool_size=2)(x_metadata)
+x_metadata = Dropout(0.2)(x_metadata)
+x_metadata = BatchNormalization()(x_metadata)
+x_metadata = Dense(64, activation='relu', kernel_regularizer=l2(0.001))(x_metadata)
+x_metadata = Flatten()(x_metadata)
 
 combined = Concatenate()([x_ecg, x_metadata])
 x = Dense(512, activation='relu', kernel_regularizer=l2(0.001))(combined)
 x = Dropout(0.3)(x)
 output = Dense(y_train.shape[1], activation='softmax')(x)
 
+
 # Compile model
-optimizer = Adam(learning_rate=1e-4)
+optimizer = RMSprop(learning_rate=1e-4)
 model = Model(inputs=[input_ecg, input_metadata], outputs=output)
 model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
 
 # Add callbacks
-early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
+early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1)
 lr_reduction = ReduceLROnPlateau(monitor='val_loss', patience=3, factor=0.5, verbose=1)
+
+# Initialize variables for best model tracking
+best_accuracy = 0.0
+best_weights_path = "best_model_weights.weights.h5"
+
+# Custom callback to track best model
+class BestModelCheckpoint(Callback):
+    def __init__(self, best_weights_path):
+        super(BestModelCheckpoint, self).__init__()
+        self.best_weights_path = best_weights_path
+        self.best_accuracy = 0.0
+
+    def on_epoch_end(self, epoch, logs=None):
+        current_accuracy = logs.get('val_accuracy')
+        if current_accuracy > self.best_accuracy:
+            self.best_accuracy = current_accuracy
+            self.model.save_weights(self.best_weights_path)
+
+# Add the custom callback
+best_model_checkpoint = BestModelCheckpoint(best_weights_path)
 
 # Train the model
 history = model.fit(
     [X_ecg_train, X_metadata_train], y_train,
     validation_data=([X_ecg_test, X_metadata_test], y_test),
     epochs=100, batch_size=64,
-    callbacks=[early_stopping, lr_reduction]
+    callbacks=[best_model_checkpoint,early_stopping,lr_reduction]
 )
 
-# 6. Evaluate the model
+# Load the best weights after training
+model.load_weights(best_weights_path)
+
+# Evaluate the model
 test_loss, test_accuracy = model.evaluate([X_ecg_test, X_metadata_test], y_test)
 print(f"Test Accuracy: {test_accuracy * 100:.2f}%")
 
-# 7. Save the model and label encoder
+# Save the model and label encoder
 model.save("ecg_combined_model.h5")
 with open("label_encoder.pkl", "wb") as f:
     import pickle
-
     pickle.dump(label_encoder, f)
 
-# 8. Plot training history
+# Plot training history
 plt.figure(figsize=(12, 5))
 
 # Accuracy plot
 plt.subplot(1, 2, 1)
 plt.plot(history.history['accuracy'], label='Train Accuracy')
-plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.plot(history.history['val_accuracy'], label='Test Accuracy')
 plt.title('Model Accuracy')
 plt.xlabel('Epochs')
 plt.ylabel('Accuracy')
@@ -234,7 +363,7 @@ plt.legend()
 # Loss plot
 plt.subplot(1, 2, 2)
 plt.plot(history.history['loss'], label='Train Loss')
-plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.plot(history.history['val_loss'], label='Test Loss')
 plt.title('Model Loss')
 plt.xlabel('Epochs')
 plt.ylabel('Loss')
@@ -243,18 +372,15 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
-# 9. Confusion matrix
+# Confusion matrix
 y_pred = model.predict([X_ecg_test, X_metadata_test])
 y_pred_classes = np.argmax(y_pred, axis=1)
 y_true_classes = np.argmax(y_test, axis=1)
 class_names = label_encoder.classes_
-# Lấy nhãn thực tế từ dữ liệu
-unique_labels = np.unique(np.concatenate((y_true_classes, y_pred_classes)))
 print(classification_report(y_true_classes, y_pred_classes, target_names=class_names))
-# Tạo ma trận nhầm lẫn
 conf_matrix = confusion_matrix(y_true_classes, y_pred_classes)
 
-# Vẽ ma trận nhầm lẫn
+# Plot confusion matrix
 plt.figure(figsize=(10, 8))
 ConfusionMatrixDisplay(confusion_matrix=conf_matrix, display_labels=class_names).plot(cmap='Blues', xticks_rotation='vertical')
 plt.title('Confusion Matrix')

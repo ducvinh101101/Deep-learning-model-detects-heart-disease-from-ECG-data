@@ -1,0 +1,170 @@
+var intervalId = setInterval(() => {
+  if (typeof $ == undefined) return;
+  if (typeof $(document).draggable == undefined) return;
+
+  clearInterval(intervalId);
+  $(function () {
+    $("body").on("click", function (e) {
+      let target = e.target;
+
+      // check is close event
+      const closeBox = isCloseIcon(target);
+      if (closeBox) {
+        const parentBox = closeBox.parentElement;
+        if (parentBox) {
+          confirmDeleteElement(parentBox);
+          return;
+        }
+      } else {
+        if (!isValid(e.target)) {
+          const isParentValid = e.target.parentElement &&
+            isValid(e.target.parentElement);
+          if (!isParentValid) {
+            // check parent of parent is valid
+            const isParentOfParentValid = e.target.parentElement &&
+              e.target.parentElement.parentElement &&
+              isValid(e.target.parentElement.parentElement);
+            if (!isParentOfParentValid) {
+              return;
+            } else {
+              target = e.target.parentElement.parentElement;
+            }
+          } else {
+            target = e.target.parentElement;
+          }
+        }
+        target = target.closest(".immersive-translate-draggable");
+
+        $(target).draggable({
+          handle: ".immersive-translate-draggable-box",
+          stop: function () {
+            const selfPosition = $(this).position();
+            const parentWidth = $(this).parent().width();
+            const parentHeight = $(this).parent().height();
+            const left = (100 * selfPosition.left / parentWidth) + "%";
+            const top = (100 * selfPosition.top / parentHeight) + "%";
+            $(this).css("left", left);
+            $(this).css("top", top);
+          },
+        });
+        const resizableTarget = target.querySelector(
+          ".immersive-translate-resizable",
+        );
+        renderIcon(resizableTarget);
+        // $(".immersive-translate-draggable-box", target).addClass(
+        //   "immersive-translate-can-drag",
+        // );
+      }
+    });
+  });
+}, 100);
+
+function isValid(ele) {
+  return ele && ele.closest(".immersive-translate-draggable");
+}
+
+function confirmDeleteElement(ele) {
+  let dialog = document.getElementById("immersive-delete-modal");
+  if (!dialog) {
+    dialog = document.createElement("div");
+    dialog.id = "immersive-delete-modal";
+    dialog.className = "immersive-translate-modal notranslate";
+    dialog.innerHTML = `
+  <div class="immersive-translate-modal-content">
+    <span data-action="close" class="immersive-translate-close">&times;</span>
+    <p style="margin:20px;">删除该元素?</p>
+    <div class="immersive-translate-btn-wrapper">
+    <div class="immersive-translate-btn immersive-gary" data-action="close">取消</div>
+    <div class="immersive-translate-btn" id="delete">删除</div>
+    </div>
+  </div>
+  `;
+    document.body.appendChild(dialog);
+
+    const closeElements = dialog.querySelectorAll("[data-action='close']");
+    const closeFun = () => {
+      dialog.style.display = "none";
+    };
+    closeElements.forEach((item) => item.onclick = closeFun);
+  }
+  const deleteBtn = document.getElementById("delete");
+  deleteBtn.onclick = () => {
+    ele.remove();
+    dialog.style.display = "none";
+  };
+  dialog.style.display = "block";
+}
+
+function isCloseIcon(ele) {
+  try {
+    let isBox = ele.className &&
+      ele.className.indexOf("immersive-translate-close-box") >= 0;
+    if (!isBox) {
+      isBox = ele.className && ele.className.indexOf("close-icon") >= 0;
+      if (isBox) {
+        return ele.parentElement;
+      } else {
+        return false;
+      }
+    } else {
+      return ele;
+    }
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function renderIcon(target) {
+  const closeIcon = target.querySelector(".close-icon");
+  const draggableBox = target.parentElement.querySelector(
+    ".immersive-translate-draggable-box",
+  );
+
+  const resizableEle = target.parentElement.querySelector(".immersive-translate-resizable");
+
+  if (
+    !(draggableBox instanceof HTMLElement) ||
+    !(closeIcon instanceof HTMLElement)
+  ) return;
+  closeIcon.style.visibility = "visible";
+  toggleDraggableClass(true, draggableBox);
+
+  if (target.getAttribute("data-injected")) return;
+
+  // 判断是否正在拖拽
+  let isDragging = false;
+  draggableBox.addEventListener("mousedown", () => {
+    isDragging = true;
+    toggleDraggableClass(true, draggableBox);
+  });
+  draggableBox.addEventListener("mouseup", () => {
+    isDragging = false;
+    toggleDraggableClass(false, draggableBox);
+    handResize(resizableEle);
+    closeIcon.style.visibility = "hidden";
+  });
+  target.addEventListener("blur", () => {
+    if (!isDragging) {
+      closeIcon.style.visibility = "hidden";
+      toggleDraggableClass(false, draggableBox);
+      handResize(resizableEle);
+    }
+  });
+  target.setAttribute("data-injected", "true");
+}
+
+function toggleDraggableClass(isAdd, draggableBox) {
+  draggableBox?.classList.toggle("immersive-translate-can-drag", isAdd);
+}
+
+function handResize(element) {
+  if (!element) return;
+  const rect = element.getBoundingClientRect();
+  const parentWidth = $(element).parent().width();
+  const parentHeight = $(element).parent().height();
+  const width = (100 * rect.width / parentWidth) + "%";
+  const height = (100 * rect.height / parentHeight) + "%";
+
+  $(element).css("width", width);
+  $(element).css("height", height);
+}
