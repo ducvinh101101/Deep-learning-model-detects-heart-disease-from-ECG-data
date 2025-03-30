@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 from keras.api.models import Model
-from keras.api.layers import Dense, Conv1D, MaxPooling1D, Flatten, Dropout, LSTM, Input, Concatenate
+from keras.api.layers import Dense, Conv1D, MaxPooling1D, Flatten, Dropout, LSTM, Input, Concatenate, BatchNormalization
 from keras.src.layers import Bidirectional
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder, MultiLabelBinarizer
@@ -117,17 +117,29 @@ y_train = np.nan_to_num(y_train, nan=0.0, posinf=1e10, neginf=-1e10)
 input_ecg = Input(shape=(X_ecg_train.shape[1], X_ecg_train.shape[2]))
 
 x_ecg = Conv1D(filters=32, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(input_ecg)
+x_ecg = Conv1D(filters=32, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
 x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
+x_ecg = Dropout(0.2)(x_ecg)
+x_ecg = BatchNormalization()(x_ecg)
+x_ecg = Conv1D(filters=64, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
 x_ecg = Conv1D(filters=64, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
 x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
+x_ecg = Dropout(0.2)(x_ecg)
+x_ecg = BatchNormalization()(x_ecg)
+x_ecg = Conv1D(filters=128, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
 x_ecg = Conv1D(filters=128, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
 x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
-x_ecg = Conv1D(filters=512, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_ecg = Dropout(0.2)(x_ecg)
+x_ecg = BatchNormalization()(x_ecg)
+x_ecg = Conv1D(filters=256, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
+x_ecg = Conv1D(filters=256, kernel_size=5, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
 x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
+x_ecg = Dropout(0.2)(x_ecg)
+x_ecg = BatchNormalization()(x_ecg)
 x_ecg = LSTM(512, return_sequences=True, dropout=0.2, recurrent_dropout=0.2)(x_ecg)
 x_ecg = LSTM(512, dropout=0.2, recurrent_dropout=0.2)(x_ecg)
 x_ecg = Dense(512, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
-x_ecg = Flatten()(x_ecg)
+
 
 input_metadata = Input(shape=(X_metadata_train.shape[1],))
 x_metadata = Dense(64, activation='relu', kernel_regularizer=l2(0.001))(input_metadata)

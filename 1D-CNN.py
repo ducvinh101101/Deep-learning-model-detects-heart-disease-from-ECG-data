@@ -1,11 +1,13 @@
 import os
 import pandas as pd
 import numpy as np
+import tensorflow as tf
+from keras.api.callbacks import Callback
 from keras.api.models import Model
-from keras.api.layers import Dense, Conv1D, MaxPooling1D, Flatten, Dropout, LSTM, Input, Concatenate
-from keras.src.layers import Bidirectional, BatchNormalization
+from keras.api.layers import Dense, Conv1D, MaxPooling1D, Flatten, Dropout, LSTM, Input, Concatenate, BatchNormalization, Layer , LayerNormalization
+from keras.src.layers import Reshape
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder, MultiLabelBinarizer
+from sklearn.preprocessing import StandardScaler, LabelEncoder, MultiLabelBinarizer
 from keras.api.utils import to_categorical
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
@@ -14,13 +16,92 @@ from keras.api.callbacks import EarlyStopping, ReduceLROnPlateau
 from keras.api.optimizers import Adam
 from keras.api.regularizers import l2
 
+
+# Custom MLPBlock converted to a Keras Layer
+class MLPBlock(Layer):
+    def __init__(self, embedding_dim, num_tokens, token_mixer_dim, channel_mixer_dim, **kwargs):
+        super(MLPBlock, self).__init__(**kwargs)
+        self.embedding_dim = embedding_dim
+        self.num_tokens = num_tokens
+        self.token_mixer_dim = token_mixer_dim
+        self.channel_mixer_dim = channel_mixer_dim
+
+        self.layer_norm1 = LayerNormalization(epsilon=1e-6)
+        self.token_mixer_fc1 = Dense(token_mixer_dim, activation='gelu')
+        self.token_mixer_fc2 = Dense(num_tokens)
+
+        self.layer_norm2 = LayerNormalization(epsilon=1e-6)
+        self.channel_mixer_fc1 = Dense(channel_mixer_dim, activation='gelu')
+        self.channel_mixer_fc2 = Dense(embedding_dim)
+
+    def call(self, x):
+        # Token Mixing
+        x = self.layer_norm1(x)
+        x = tf.transpose(x, perm=[0, 2, 1])
+        x = self.token_mixer_fc1(x)
+        x = self.token_mixer_fc2(x)
+        x = tf.transpose(x, perm=[0, 2, 1])
+        # Channel Mixing
+        x = self.layer_norm2(x)
+        x = self.channel_mixer_fc1(x)
+        x = self.channel_mixer_fc2(x)
+        return x
+
+
+# Custom Feature-wise Attention Layer
+class FeatureWiseAttention(Layer):
+    def __init__(self, input_dim, reduced_dim=128, **kwargs):
+        super(FeatureWiseAttention, self).__init__(**kwargs)
+        # Reduce dimensions first
+        self.reduction_layer = Dense(reduced_dim, activation='relu')
+        self.attention_layer = Dense(reduced_dim, activation='softmax')
+        self.restore_layer = Dense(input_dim)
+
+    def call(self, inputs):
+        # Reduce the dimensionality
+        reduced_inputs = self.reduction_layer(inputs)
+        # Calculate attention weights
+        attention_weights = self.attention_layer(reduced_inputs)
+        # Apply attention
+        attended_features = reduced_inputs * attention_weights
+        # Restore the dimensionality
+        restored_features = self.restore_layer(attended_features)
+        return restored_features
+
+# Custom Attention Layer
+class Attention(Layer):
+    def __init__(self, **kwargs):
+        super(Attention, self).__init__(**kwargs)
+
+    def build(self, input_shape):
+        self.W = self.add_weight(name='attention_weight', shape=(input_shape[-1], 1),initializer='random_normal', trainable=True)
+        self.b = self.add_weight(name='attention_bias', shape=(input_shape[1], 1),initializer='zeros', trainable=True)
+        super(Attention, self).build(input_shape)
+
+    def call(self, inputs):
+        score = tf.nn.tanh(tf.tensordot(inputs, self.W, axes=1) + self.b)
+        attention_weights = tf.nn.softmax(score, axis=1)
+        context_vector = attention_weights * inputs
+        context_vector = tf.reduce_sum(context_vector, axis=1)
+        return context_vector
+
+# Custom layer to add dimension
+class ExpandDimsLayer(Layer):
+    def __init__(self, axis=1, **kwargs):
+        super(ExpandDimsLayer, self).__init__(**kwargs)
+        self.axis = axis
+
+    def call(self, inputs):
+        return tf.expand_dims(inputs, axis=self.axis)
+
 # Path to data
 diagnostics_file = "Data_ECG/Diagnostics.csv"
 ecg_data_folder = "Data_ECG/ECGData/ECGData"
 
 # 1. Load Diagnostics.csv
 diagnostics_data = pd.read_csv(diagnostics_file, encoding='utf-8')
-diagnostics_data = diagnostics_data[~diagnostics_data['Rhythm'].isin(['SAAWR', 'AVRT', 'AVNRT', 'AT', 'SA', 'AF', 'SVT'])].reset_index(drop=True)
+diagnostics_data = diagnostics_data[
+    ~diagnostics_data['Rhythm'].isin(['SAAWR', 'AVRT', 'AVNRT', 'AT', 'SA', 'AF', 'SVT'])].reset_index(drop=True)
 
 # Giảm số lượng SB xuống 1800 cái đầu
 diagnostics_data_sb = diagnostics_data[diagnostics_data['Rhythm'] == 'SB']
@@ -36,28 +117,23 @@ label_column = diagnostics_data['Rhythm']
 metadata_encoded = pd.get_dummies(metadata_features, columns=['Gender'], drop_first=True)
 
 # Process Beat column
-diagnostics_data['Beat'] = diagnostics_data['Beat'].fillna('NONE')  # Thay thế giá trị NaN bằng 'NONE'
-diagnostics_data['Beat'] = diagnostics_data['Beat'].apply(lambda x: x.split())  # Tách các nhãn thành danh sách
+diagnostics_data['Beat'] = diagnostics_data['Beat'].fillna('NONE')
+diagnostics_data['Beat'] = diagnostics_data['Beat'].apply(lambda x: x.split())
 
 # Mã hóa nhãn bằng MultiLabelBinarizer
 mlb = MultiLabelBinarizer()
 beat_encoded = mlb.fit_transform(diagnostics_data['Beat'])
-beat_columns = mlb.classes_
-
-# Filter numeric columns for scaling
-numeric_columns = metadata_encoded.select_dtypes(include=[np.number])
 
 # Scale numerical features
 scaler = StandardScaler()
-metadata_scaled_numeric = scaler.fit_transform(numeric_columns)
-
-# Combine metadata and beat data
+metadata_scaled_numeric = scaler.fit_transform(metadata_encoded.select_dtypes(include=[np.number]))
 metadata_scaled = np.hstack([metadata_scaled_numeric, beat_encoded])
 
 # Encode labels
 label_encoder = LabelEncoder()
 labels_encoded = label_encoder.fit_transform(label_column)
 labels_one_hot = to_categorical(labels_encoded)
+
 
 # 2. Load ECG data from CSV files
 def load_ecg_data(file_name):
@@ -71,6 +147,7 @@ def load_ecg_data(file_name):
     else:
         print(f"File {file_name} not found!")
         return None
+
 
 ecgs = []
 metadata_list = []
@@ -109,7 +186,6 @@ X_ecg_train, X_ecg_test, X_metadata_train, X_metadata_test, y_train, y_test = tr
 print(4)
 
 # 4. Build model
-# Chuẩn hóa dữ liệu để tránh NaN/Inf
 X_ecg_train = np.nan_to_num(X_ecg_train, nan=0.0, posinf=1e10, neginf=-1e10)
 X_metadata_train = np.nan_to_num(X_metadata_train, nan=0.0, posinf=1e10, neginf=-1e10)
 y_train = np.nan_to_num(y_train, nan=0.0, posinf=1e10, neginf=-1e10)
@@ -131,15 +207,35 @@ x_ecg = Conv1D(filters=128, kernel_size=10, activation='relu', kernel_regularize
 x_ecg = MaxPooling1D(pool_size=2)(x_ecg)
 x_ecg = Dropout(0.2)(x_ecg)
 x_ecg = BatchNormalization()(x_ecg)
+x_ecg = Attention()(x_ecg)
 x_ecg = Dense(128, activation='relu', kernel_regularizer=l2(0.001))(x_ecg)
 x_ecg = Flatten()(x_ecg)
 
+# Apply MLPBlock
+# x_ecg = ExpandDimsLayer(axis=1)(x_ecg)
+# mlp_block = MLPBlock(embedding_dim=512, num_tokens=1, token_mixer_dim=256, channel_mixer_dim=512)
+# x_ecg = mlp_block(x_ecg)
+# x_ecg = Flatten()(x_ecg)
+
+# Apply Feature Wise
+# x_ecg = FeatureWiseAttention(input_dim=x_ecg.shape[-1])(x_ecg)
+# x_ecg = Flatten()(x_ecg)
+
 input_metadata = Input(shape=(X_metadata_train.shape[1],))
-x_metadata = Dense(64, activation='relu', kernel_regularizer=l2(0.001))(input_metadata)
-x_metadata = Dense(32, activation='relu', kernel_regularizer=l2(0.001))(x_metadata)
+x_metadata = Reshape((X_metadata_train.shape[1], 1))(input_metadata)
+x_metadata = Conv1D(filters=64, kernel_size=3, activation='relu', kernel_regularizer=l2(0.001))(x_metadata)
+x_metadata = MaxPooling1D(pool_size=2)(x_metadata)
+x_metadata = Dropout(0.2)(x_metadata)
+x_metadata = BatchNormalization()(x_metadata)
+x_metadata = Conv1D(filters=64, kernel_size=3, activation='relu', kernel_regularizer=l2(0.001))(x_metadata)
+x_metadata = MaxPooling1D(pool_size=2)(x_metadata)
+x_metadata = Dropout(0.2)(x_metadata)
+x_metadata = BatchNormalization()(x_metadata)
+x_metadata = Dense(64, activation='relu', kernel_regularizer=l2(0.001))(x_metadata)
+x_metadata = Flatten()(x_metadata)
 
 combined = Concatenate()([x_ecg, x_metadata])
-x = Dense(128, activation='relu', kernel_regularizer=l2(0.001))(combined)
+x = Dense(512, activation='relu', kernel_regularizer=l2(0.001))(combined)
 x = Dropout(0.3)(x)
 output = Dense(y_train.shape[1], activation='softmax')(x)
 
@@ -149,18 +245,41 @@ model = Model(inputs=[input_ecg, input_metadata], outputs=output)
 model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
 
 # Add callbacks
-early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1)
-lr_reduction = ReduceLROnPlateau(monitor='val_loss', patience=3, factor=0.5, verbose=1)
+# early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
+# lr_reduction = ReduceLROnPlateau(monitor='val_loss', patience=3, factor=0.5, verbose=1)
+
+# Initialize variables for best model tracking
+best_accuracy = 0.0
+best_weights_path = "best_model_weights.weights.h5"
+
+# Custom callback to track best model
+class BestModelCheckpoint(Callback):
+    def __init__(self, best_weights_path):
+        super(BestModelCheckpoint, self).__init__()
+        self.best_weights_path = best_weights_path
+        self.best_accuracy = 0.0
+
+    def on_epoch_end(self, epoch, logs=None):
+        current_accuracy = logs.get('val_accuracy')
+        if current_accuracy > self.best_accuracy:
+            self.best_accuracy = current_accuracy
+            self.model.save_weights(self.best_weights_path)
+
+# Add the custom callback
+best_model_checkpoint = BestModelCheckpoint(best_weights_path)
 
 # Train the model
 history = model.fit(
     [X_ecg_train, X_metadata_train], y_train,
     validation_data=([X_ecg_test, X_metadata_test], y_test),
-    epochs=50, batch_size=64,
-    callbacks=[early_stopping, lr_reduction]
+    epochs=100, batch_size=64,
+    callbacks=[best_model_checkpoint]
 )
 
-# 6. Evaluate the model
+# Load the best weights after training
+model.load_weights(best_weights_path)
+
+# Evaluate the model
 test_loss, test_accuracy = model.evaluate([X_ecg_test, X_metadata_test], y_test)
 print(f"Test Accuracy: {test_accuracy * 100:.2f}%")
 
@@ -176,7 +295,7 @@ plt.figure(figsize=(12, 5))
 # Accuracy plot
 plt.subplot(1, 2, 1)
 plt.plot(history.history['accuracy'], label='Train Accuracy')
-plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.plot(history.history['val_accuracy'], label='Test Accuracy')
 plt.title('Model Accuracy')
 plt.xlabel('Epochs')
 plt.ylabel('Accuracy')
@@ -185,7 +304,7 @@ plt.legend()
 # Loss plot
 plt.subplot(1, 2, 2)
 plt.plot(history.history['loss'], label='Train Loss')
-plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.plot(history.history['val_loss'], label='Test Loss')
 plt.title('Model Loss')
 plt.xlabel('Epochs')
 plt.ylabel('Loss')
