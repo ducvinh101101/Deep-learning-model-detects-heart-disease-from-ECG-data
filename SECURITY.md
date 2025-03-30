@@ -4,20 +4,13 @@
 
 Below is the list of versions currently supported with security updates:
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
-
 Unsupported versions will not receive any updates or security patches. Users are encouraged to upgrade to the latest version to ensure security.
 
 ## Reporting a Vulnerability
 
 If you discover a security vulnerability in the project, please report it immediately by following these steps:
 
-1. Send an email to **security@yourdomain.com** with the subject `[SECURITY ISSUE] Brief description of the issue`.
+1. Send an email to **ducvinh1012004@gmail.com** with the subject `[SECURITY ISSUE] Brief description of the issue`.
 2. Provide details about the vulnerability, including:
    - A detailed description of the issue.
    - Steps to reproduce the vulnerability.
